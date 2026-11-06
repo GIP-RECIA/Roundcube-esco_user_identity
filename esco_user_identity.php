@@ -87,7 +87,9 @@ class esco_user_identity extends rcube_plugin
         }
 
         $_SESSION['user_data'] = rcmail::get_instance()->user->data;
-        $this->ldap->user = rcmail::get_instance()->user;
+        if ($this->ldap) {
+            $this->ldap->user = rcmail::get_instance()->user;
+        }
 
         return $args;
     }
