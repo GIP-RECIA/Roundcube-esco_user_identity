@@ -10,9 +10,11 @@
  * @author Kris Steinhoff
  * @license GNU GPLv3+
  */
+
+use EscoUserIdentity\LdapBackend;
+
 class esco_user_identity extends rcube_plugin
 {
-//    public $task = 'login';
 
     private $ldap;
 
@@ -25,41 +27,84 @@ class esco_user_identity extends rcube_plugin
 
     function lookup_user_name($args)
     {
-        if ($this->init_ldap($args['host'])) {
-            $results = $this->ldap->search('*', $args['user'], true);
+        if (!$this->init_ldap($args['host'])) {
+            return $args;
+        }
 
-            if (count($results->records) == 1) {
-                $user_name = is_array($results->records[0]['name']) ? $results->records[0]['name'][0] : $results->records[0]['name'];
-                $user_email = is_array($results->records[0]['email']) ? $results->records[0]['email'][0] : $results->records[0]['email'];
+        $results = $this->ldap->search('*', $args['user'], true);
+        if (count($results->records) != 1) {
+            return $args;
+        }
 
-                $args['user_name'] = $user_name;
-                $args['email_list'] = array();
+        $record = $results->records[0];
 
-                if (!$args['user_email'] && strpos($user_email, '@')) {
-                    $args['user_email'] = rcube_utils::idn_to_ascii($user_email);
-                }
-                $rcmail = rcmail::get_instance();
+        $args['user_name'] = $this->firstValue($record['name'] ?? null);
+        $args['email_list'] = $this->collectEmailAliases($record);
+        $args = $this->applyPrimaryEmail($args, $record);
+        $args = $this->applyAlias($args, $record);
 
-                if (($alias_col = $rcmail->config->get('esco_user_identity_alias')) && $results->records[0][$alias_col]) {
-                    $args['alias'] = is_array($results->records[0][$alias_col]) ? $results->records[0][$alias_col][0] : $results->records[0][$alias_col];
-                }
+        return $args;
+    }
 
-                foreach (array_keys($results[0]) as $key) {
-                    if (!preg_match('/^email($|:)/', $key)) {
-                        continue;
-                    }
+    /**
+     * LDAP attributes come back either as a scalar or an array of values -
+     * normalize to a single value (the first one).
+     */
+    private function firstValue($value)
+    {
+        return is_array($value) ? ($value[0] ?? null) : $value;
+    }
 
-                    foreach ((array)$results->records[0][$key] as $alias) {
-                        if (strpos($alias, '@')) {
-                            $args['email_list'][] = rcube_utils::idn_to_ascii($alias);
-                        }
-                    }
-                }
+    /**
+     * Fill in user_email from LDAP, but only if it isn't already set.
+     */
+    private function applyPrimaryEmail(array $args, array $record): array
+    {
+        $email = $this->firstValue($record['email'] ?? null);
 
-            }
+        if (!$args['user_email'] && $email && strpos($email, '@')) {
+            $args['user_email'] = rcube_utils::idn_to_ascii($email);
         }
 
         return $args;
+    }
+
+    /**
+     * Fill in an alias from a configurable LDAP attribute
+     * (esco_user_identity_alias), if that setting is used.
+     */
+    private function applyAlias(array $args, array $record): array
+    {
+        $alias_col = rcmail::get_instance()->config->get('esco_user_identity_alias');
+
+        if ($alias_col && !empty($record[$alias_col])) {
+            $args['alias'] = $this->firstValue($record[$alias_col]);
+        }
+
+        return $args;
+    }
+
+    /**
+     * Collect every "email"/"email:*" LDAP attribute (qualified multi-valued
+     * email aliases) into a flat list.
+     */
+    private function collectEmailAliases(array $record): array
+    {
+        $email_list = [];
+
+        foreach (array_keys($record) as $key) {
+            if (!preg_match('/^email($|:)/', $key)) {
+                continue;
+            }
+
+            foreach ((array) $record[$key] as $alias) {
+                if (strpos($alias, '@')) {
+                    $email_list[] = rcube_utils::idn_to_ascii($alias);
+                }
+            }
+        }
+
+        return $email_list;
     }
 
     function login_after($args)
@@ -114,7 +159,7 @@ class esco_user_identity extends rcube_plugin
             return false;
         }
 
-        $this->ldap = new esco_user_identity_ldap_backend(
+        $this->ldap = new LdapBackend(
             $ldap_config[$addressbook],
             rcmail::get_instance()->config->get('ldap_debug'),
             rcmail::get_instance()->config->mail_domain($host),
@@ -122,14 +167,4 @@ class esco_user_identity extends rcube_plugin
 
         return $this->ldap->ready;
     }
-}
-
-class esco_user_identity_ldap_backend extends rcube_ldap{
-
-    function __construct($p, $debug, $mail_domain, $search)
-    {
-        parent::__construct($p, $debug, $mail_domain);
-        $this->prop['search_fields'] = (array)$search;
-    }
-
 }
