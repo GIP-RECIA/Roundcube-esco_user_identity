@@ -20,6 +20,7 @@ class esco_user_identity extends rcube_plugin
 
     function init()
     {
+        $this->load_config();
         $this->add_hook('user_create', array($this, 'lookup_user_name'));
         $this->add_hook('login_after', array($this, 'login_after'));
         $this->add_hook('refresh_user', array($this, 'refresh_user'));
